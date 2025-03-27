@@ -8,7 +8,7 @@ from albumentations.pytorch import ToTensorV2
 import yaml
 
 # Load config
-with open("config.yaml", "r") as f:
+with open("utils/config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 # Data Augmentation
