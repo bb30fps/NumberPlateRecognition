@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 from utils.dataset import NumberPlateDataset
 from models.model import PlateRecognitionModel
@@ -7,7 +8,7 @@ from albumentations.pytorch import ToTensorV2
 import yaml
 
 # Load config
-with open("utils/config.yaml", "r") as f:
+with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 # Data Augmentation
