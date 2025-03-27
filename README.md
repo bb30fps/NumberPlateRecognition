@@ -10,6 +10,7 @@ A deep learning-based system to detect and recognize license plates from images 
 
 ## Installation
 1. **Clone the repository**:
+   
    git clone https://github.com/bb30fps/number-plate-recognition.git
    
    cd number-plate-recognition
