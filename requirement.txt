@@ -8,3 +8,8 @@ matplotlib
 scikit-learn
 xmltodict
 tqdm
+torch==2.0.1
+torchvision==0.15.2
+opencv-python==4.7.0
+pillow==9.5.0
+numpy==1.24.3
