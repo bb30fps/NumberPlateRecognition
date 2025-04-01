@@ -108,10 +108,34 @@ class MainApplication(tk.Tk):
                                   "Contact administrator for access")
             return
         
-        # Add your model prediction logic here
-        frame = self.video.get_frame()
-        # processed_frame = model.predict(frame)
-        # Update display with results
+       def run_detection(self):
+    if not self.is_admin:
+        messagebox.showwarning("Permission Denied", 
+                             "Contact administrator for access")
+        return
+    
+    # Load trained model
+    model = PlateRecognitionModel(num_chars=len(config['chars']))
+    checkpoint = torch.load("models/number_plate_model.pth")
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    
+    # Process frame
+    frame = self.video.get_frame()
+    with torch.no_grad():
+        transformed = transform(image=frame)
+        img_tensor = transformed['image'].unsqueeze(0)
+        outputs = model(img_tensor)
+        _, preds = torch.max(outputs, 2)
+        plate_text = ''.join([config['chars'][i] for i in preds[0]])
+    
+    # Display results
+    cv2.putText(frame, f"Plate: {plate_text}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+    img = Image.fromarray(frame)
+    imgtk = ImageTk.PhotoImage(image=img)
+    self.video_label.imgtk = imgtk
+    self.video_label.configure(image=imgtk)
     
     def show_logs(self):
         # Implement log viewer
