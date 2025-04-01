@@ -6,6 +6,9 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import yaml
 import numpy as np
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ---- 1. Load Config ----
 with open("utils/config.yaml", "r") as f:
