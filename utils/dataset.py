@@ -21,6 +21,11 @@ class NumberPlateDataset(Dataset):
             root = tree.getroot()
             
             filename = root.find('filename').text
+            
+            img_path = os.path.join(self.image_dir, filename)
+        if not os.path.exists(img_path):
+            raise FileNotFoundError(f"Image {filename} not found in {self.image_dir}")
+            
             plate = root.find('object/name').text.upper()  # Ensure uppercase
             xmin = int(root.find('object/bndbox/xmin').text)
             ymin = int(root.find('object/bndbox/ymin').text)
