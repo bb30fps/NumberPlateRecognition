@@ -3,11 +3,15 @@ class AuthManager:
         self.db = db
     
     def validate_permissions(self, username, required_level):
-        """Checks if user has required access level"""
+        """Check user permissions against database"""
+        cursor = self.db.conn.cursor()
+        
         if required_level == "admin":
-            # Get admin status from users table
-            c = self.db.conn.cursor()
-            c.execute("SELECT is_admin FROM users WHERE username=?", (username,))
-            result = c.fetchone()
+            cursor.execute(
+                "SELECT is_admin FROM users WHERE username=?",
+                (username,)
+            )
+            result = cursor.fetchone()
             return result[0] if result else False
-        return True
+            
+        return True  # Default allow for non-admin actions
