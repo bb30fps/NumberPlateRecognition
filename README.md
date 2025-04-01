@@ -8,12 +8,7 @@ A deep learning-based system to detect and recognize license plates from images 
 - **Custom Dataset Support**: Works with XML and JPG annotations.
 - **Google Colab Integration**: Train your model on GPU for faster results.
 
-## Installation
-1. **Clone the repository**:
-   
-   git clone https://github.com/bb30fps/NumberPlateRecognition.git
-   
-   cd number-plate-recognition
+
 
 
 Here's a step-by-step manual to run your license plate recognition system in VS Code:
@@ -42,7 +37,7 @@ Here's a step-by-step manual to run your license plate recognition system in VS 
 
 ## 2. Clone Repository
 ```bash
-git clone https://github.com/yourusername/license-plate-recognition.git
+git clone https://github.com/bb30fps/NumberPlateRecognition.git
 cd license-plate-recognition
 ```
 
@@ -74,13 +69,13 @@ cd license-plate-recognition
    - Place XML annotations in `data/annotations/`
    - Ensure XML files match image filenames:
      ```
-     image_001.jpg ↔ image_001.xml
+     AS1.jpg ↔ AS1.xml
      ```
 
 2. **Sample XML Structure**:
    ```xml
    <annotation>
-     <filename>car_001.jpg</filename>
+     <filename>AS1.jpg</filename>
      <object>
        <name>ABC123</name>
        <bndbox>
