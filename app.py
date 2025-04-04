@@ -25,7 +25,7 @@ class MainApplication(tk.Tk):
         self.auth = AuthManager(self.db)
         self.video = VideoCapture()
         
-        # GUI State
+        #User-Interface
         self.current_user = None
         self.transform = A.Compose([
             A.Resize(*self.config['image_size']),
@@ -33,7 +33,7 @@ class MainApplication(tk.Tk):
             ToTensorV2()
         ])
         
-        # Load model (if available)
+        #load-model
         self.model = None
         try:
             self.model = PlateRecognitionModel(num_chars=len(self.config['chars']))
