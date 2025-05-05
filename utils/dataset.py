@@ -15,29 +15,36 @@ class NumberPlateDataset(Dataset):
         self.annotations = self._parse_xmls()
 
     def _parse_xmls(self):
-        annotations = []
-        for xml_file in os.listdir(self.annotation_dir):
+     annotations = []
+     for xml_file in os.listdir(self.annotation_dir):
+        try:
             tree = ET.parse(os.path.join(self.annotation_dir, xml_file))
             root = tree.getroot()
             
             filename = root.find('filename').text
-            
             img_path = os.path.join(self.image_dir, filename)
-        if not os.path.exists(img_path):
-            raise FileNotFoundError(f"Image {filename} not found in {self.image_dir}")
             
-            plate = root.find('object/name').text.upper()  # Ensure uppercase
-            xmin = int(root.find('object/bndbox/xmin').text)
-            ymin = int(root.find('object/bndbox/ymin').text)
-            xmax = int(root.find('object/bndbox/xmax').text)
-            ymax = int(root.find('object/bndbox/ymax').text)
-            
-            annotations.append({
-                'filename': filename,
-                'plate': plate,
-                'bbox': [xmin, ymin, xmax, ymax]
-            })
-        return annotations
+            if not os.path.exists(img_path):
+                print(f"Warning: Missing image {filename}")
+                continue
+                
+            # Handle multiple plates in one image
+            for obj in root.findall('object'):
+                plate = obj.find('name').text.upper()
+                bbox = obj.find('bndbox')
+                annotations.append({
+                    'filename': filename,
+                    'plate': plate,
+                    'bbox': [
+                        int(bbox.find('xmin').text),
+                        int(bbox.find('ymin').text),
+                        int(bbox.find('xmax').text),
+                        int(bbox.find('ymax').text)
+                    ]
+                })
+        except Exception as e:
+            print(f"Skipping {xml_file}: {str(e)}")
+     return annotations
 
     def __len__(self):
         return len(self.annotations)
