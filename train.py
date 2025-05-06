@@ -1,114 +1,147 @@
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from utils.dataset import NumberPlateDataset
 from models.model import PlateRecognitionModel
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import yaml
-import numpy as np
-import sys
 import os
+import sys
+from sklearn.model_selection import train_test_split
+import torch.multiprocessing
+import numpy as np
+from visualization import TrainingVisualizer
+
+# Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# ---- 1. Load Config ----
-with open("utils/config.yaml", "r") as f:
-    config = yaml.safe_load(f)
-
-# ---- 2. Collate Function ----
-def collate_fn(batch):
-    images = []
-    labels = []
-    label_lengths = []
+def calculate_accuracy(model, loader, device, chars):
+    model.eval()
+    correct = 0
+    total = 0
     
-    for img, label in batch:
-        images.append(img)
-        labels.append(label)
-        label_lengths.append(len(label))
-        
-    images = torch.stack(images, dim=0)
-    labels = torch.cat(labels, dim=0)
-    label_lengths = torch.tensor(label_lengths, dtype=torch.long)
+    with torch.no_grad():
+        for images, labels, label_lengths in loader:
+            images = images.to(device)
+            outputs = model(images)
+            _, preds = torch.max(outputs, 2)
+            
+            pred_strs = decode_predictions(preds, chars)
+            true_strs = decode_predictions(labels, chars)
+            
+            for pred, true in zip(pred_strs, true_strs):
+                if pred == true:
+                    correct += 1
+                total += 1
+                    
+    return 100 * correct / total if total > 0 else 0
+
+def decode_predictions(preds, chars):
+    blank_idx = len(chars)
+    sequences = []
     
-    return images, labels, label_lengths
-
-# ---- 3. Data Preparation ----
-transform = A.Compose([
-    A.Resize(*config['image_size']),
-    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-    ToTensorV2()
-])
-
-dataset = NumberPlateDataset(
-    image_dir="data/images",
-    annotation_dir="data/annotations",
-    chars=config['chars'],
-    transforms=transform
-)
-
-dataloader = DataLoader(
-    dataset,
-    batch_size=config['batch_size'],
-    collate_fn=collate_fn,
-    shuffle=True,
-    num_workers=2
-)
-
-# ---- 4. Model Setup ----
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = PlateRecognitionModel(num_chars=len(config['chars'])).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
-criterion = torch.nn.CTCLoss(blank=len(config['chars']))  # Blank index
-
-# ---- 5. Training Loop ----
-for epoch in range(config['num_epochs']):
-    epoch_loss = 0
-    model.train()
-    
-    for batch_idx, (images, labels, label_lengths) in enumerate(dataloader):
-        images = images.to(device)
-        labels = labels.to(device)
-        label_lengths = label_lengths.to(device)
+    for pred in preds.permute(1, 0):
+        chars_pred = []
+        prev_char = blank_idx
         
-        optimizer.zero_grad()
+        for idx in pred:
+            if idx != prev_char and idx != blank_idx:
+                chars_pred.append(chars[idx])
+            prev_char = idx
+            
+        sequences.append(''.join(chars_pred))
         
-        # Forward pass
-        outputs = model(images)  # Shape: (seq_len, batch_size, num_chars+1)
-        log_probs = torch.nn.functional.log_softmax(outputs, dim=2)
-        
-        # Input lengths (all sequences are same length)
-        input_lengths = torch.full(
-            size=(images.size(0),),
-            fill_value=outputs.size(0),  # Sequence length from model
-            dtype=torch.long
-        ).to(device)
-        
-        # Compute loss
-        loss = criterion(
-            log_probs,          # (T, N, C)
-            labels,             # (N*S)
-            input_lengths,      # (N)
-            label_lengths       # (N)
-        )
-        
-        # Backward pass
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
-        optimizer.step()
-        
-        epoch_loss += loss.item()
-        
-        if batch_idx % 10 == 0:
-            print(f"Epoch {epoch+1} | Batch {batch_idx} | Loss: {loss.item():.4f}")
-    
-    # Epoch statistics
-    avg_loss = epoch_loss / len(dataloader)
-    print(f"Epoch {epoch+1} Complete | Avg Loss: {avg_loss:.4f}")
+    return sequences
 
-# ---- 6. Save Model ----
-torch.save({
-    'model_state_dict': model.state_dict(),
-    'config': config,
-    'chars': config['chars']
-}, "models/number_plate_model.pth")
+def main():
+    # Load config
+    with open("utils/config.yaml", "r") as f:
+        config = yaml.safe_load(f)
 
-print("Training complete! Model saved.")
+    # Initialize visualizer
+    visualizer = TrainingVisualizer()
+    train_losses = []
+    val_losses = []
+    train_accuracies = []
+    val_accuracies = []
+
+    # Data preparation
+    transform = A.Compose([
+        A.Resize(*config['image_size']),
+        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ToTensorV2()
+    ])
+
+    full_dataset = NumberPlateDataset(
+        image_dir="data/images",
+        annotation_dir="data/annotations",
+        chars=config['chars'],
+        transforms=transform
+    )
+
+    # Dataset split
+    train_indices, val_indices = train_test_split(
+        list(range(len(full_dataset))),
+        test_size=0.2,
+        random_state=42,
+        shuffle=True
+    )
+
+    # DataLoader settings
+    num_workers = 0 if os.name == 'nt' else 2
+    pin_memory = torch.cuda.is_available()
+
+    train_loader = DataLoader(
+        Subset(full_dataset, train_indices),
+        batch_size=config['batch_size'],
+        collate_fn=lambda b: (torch.stack([item[0] for item in b]), 
+                             torch.cat([item[1] for item in b]),
+                             torch.tensor([len(item[1]) for item in b])),
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory
+    )
+
+    val_loader = DataLoader(
+        Subset(full_dataset, val_indices),
+        batch_size=config['batch_size'],
+        collate_fn=lambda b: (torch.stack([item[0] for item in b]), 
+                             torch.cat([item[1] for item in b]),
+                             torch.tensor([len(item[1]) for item in b])),
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory
+    )
+
+    # Model setup
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = PlateRecognitionModel(num_chars=len(config['chars'])).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
+    criterion = torch.nn.CTCLoss(blank=len(config['chars']))
+
+    # Training loop
+    best_val_loss = float('inf')
+    for epoch in range(config['num_epochs']):
+        model.train()
+        train_loss = 0.0
+        
+        for batch_idx, (images, labels, label_lengths) in enumerate(train_loader):
+            # Training steps...
+        
+        # Validation and metrics collection
+        train_acc = calculate_accuracy(model, train_loader, device, config['chars'])
+        val_acc = calculate_accuracy(model, val_loader, device, config['chars'])
+        
+        train_losses.append(avg_train_loss)
+        val_losses.append(avg_val_loss)
+        train_accuracies.append(train_acc)
+        val_accuracies.append(val_acc)
+
+    # Generate plots
+    visualizer.plot_loss_curves(train_losses, val_losses)
+    visualizer.plot_accuracy(train_accuracies, val_accuracies)
+    visualizer.plot_sample_predictions(model, val_loader, device, config['chars'])
+
+if __name__ == '__main__':
+    torch.multiprocessing.freeze_support()
+    main()
