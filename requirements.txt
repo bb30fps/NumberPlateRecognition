@@ -13,4 +13,5 @@ torchvision
 opencv-python
 pillow
 numpy
+seaborn
 PyYAML
