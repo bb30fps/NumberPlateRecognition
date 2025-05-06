@@ -1,197 +1,190 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
-from PIL import ImageTk, Image
-import cv2
 import torch
-import yaml
-from database import DatabaseManager
-from video_capture import VideoCapture
-from auth import AuthManager
+from torch.utils.data import DataLoader, Subset
+from utils.dataset import NumberPlateDataset
 from models.model import PlateRecognitionModel
-import threading
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+import yaml
+import numpy as np
+import os
+import sys
+from sklearn.model_selection import train_test_split
+import warnings
 
-class MainApplication(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Secure Plate Recognition")
-        self.geometry("1200x800")
-        
-        # Load configuration
-        with open("utils/config.yaml", "r") as f:
-            self.config = yaml.safe_load(f)
-        
-        # Initialize subsystems
-        self.db = DatabaseManager()
-        self.auth = AuthManager(self.db)
-        self.video = VideoCapture()
-        
-        #User-Interface
-        self.current_user = None
-        self.transform = A.Compose([
-            A.Resize(*self.config['image_size']),
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            ToTensorV2()
-        ])
-        
-        #load-model
-        self.model = None
-        try:
-            self.model = PlateRecognitionModel(num_chars=len(self.config['chars']))
-            checkpoint = torch.load("models/number_plate_model.pth")
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            self.model.eval()
-        except Exception as e:
-            print(f"Model loading failed: {str(e)}")
-        
-        # Show login screen first
-        self.show_login()
+# Add project root to path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    def show_login(self):
-        # Login frame
-        self.login_frame = ttk.Frame(self)
-        
-        ttk.Label(self.login_frame, text="Username:").grid(row=0, column=0)
-        self.username_entry = ttk.Entry(self.login_frame)
-        self.username_entry.grid(row=0, column=1)
-        
-        ttk.Label(self.login_frame, text="Password:").grid(row=1, column=0)
-        self.password_entry = ttk.Entry(self.login_frame, show="*")
-        self.password_entry.grid(row=1, column=1)
-        
-        ttk.Button(self.login_frame, text="Login", 
-                  command=self.handle_login).grid(row=2, column=1)
-        
-        self.login_frame.pack(expand=True)
+# ---- Load Config ----
+with open("utils/config.yaml", "r") as f:
+    config = yaml.safe_load(f)
 
-    def handle_login(self):
-        username = self.username_entry.get()
-        password = self.password_entry.get()
-        result = self.db.authenticate_user(username, password)
+# ---- Collate Function ----
+def collate_fn(batch):
+    """Handle variable-length sequence labels"""
+    images = []
+    labels = []
+    label_lengths = []
+    
+    for img, label in batch:
+        images.append(img)
+        labels.append(label)
+        label_lengths.append(len(label))
         
-        if result:
-            self.current_user = {
-                'username': username,
-                'is_admin': result[0]
-            }
-            self.db.log_action(username, "Login")
-            self.show_main_app()
-        else:
-            messagebox.showerror("Error", "Invalid credentials")
+    images = torch.stack(images, dim=0)
+    labels = torch.cat(labels, dim=0)
+    label_lengths = torch.tensor(label_lengths, dtype=torch.long)
+    
+    return images, labels, label_lengths
 
-    def show_main_app(self):
-        # Destroy login frame
-        self.login_frame.destroy()
-        
-        # Main application layout
-        self.video_frame = ttk.LabelFrame(self, text="Live Camera Feed")
-        self.controls_frame = ttk.Frame(self)
-        
-        # Video display
-        self.video_label = ttk.Label(self.video_frame)
-        self.video_label.pack()
-        
-        # Controls
-        self.btn_start = ttk.Button(self.controls_frame, text="Start Camera",
-                                   command=self.start_video)
-        self.btn_stop = ttk.Button(self.controls_frame, text="Stop Camera",
-                                  command=self.stop_video)
-        self.btn_predict = ttk.Button(self.controls_frame, text="Run Detection",
-                                     command=self.run_detection)
-        
-        self.btn_start.pack(side=tk.LEFT)
-        self.btn_stop.pack(side=tk.LEFT)
-        self.btn_predict.pack(side=tk.LEFT)
-        
-        # Admin panel
-        if self.auth.validate_permissions(self.current_user['username'], "admin"):
-            self.admin_panel = ttk.LabelFrame(self, text="Admin Controls")
-            ttk.Button(self.admin_panel, text="View Logs",
-                      command=self.show_logs).pack()
-            self.admin_panel.pack(fill=tk.X)
-        
-        self.video_frame.pack(fill=tk.BOTH, expand=True)
-        self.controls_frame.pack(fill=tk.X)
+# ---- Data Preparation with Validation Split ----
+transform = A.Compose([
+    A.Resize(*config['image_size']),
+    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ToTensorV2()
+])
 
-    def start_video(self):
-        self.video.start()
-        self.update_video_feed()
+# Load full dataset
+full_dataset = NumberPlateDataset(
+    image_dir="data/images",
+    annotation_dir="data/annotations",
+    chars=config['chars'],
+    transforms=transform
+)
 
-    def update_video_feed(self):
-        frame = self.video.get_frame()
-        if frame is not None:
-            img = Image.fromarray(frame)
-            imgtk = ImageTk.PhotoImage(image=img)
-            self.video_label.imgtk = imgtk
-            self.video_label.configure(image=imgtk)
-        self.after(10, self.update_video_feed)
+# Split dataset
+train_indices, val_indices = train_test_split(
+    list(range(len(full_dataset))),
+    test_size=0.2,
+    random_state=42,
+    shuffle=True
+)
 
-    def run_detection(self):
-        if not self.auth.validate_permissions(self.current_user['username'], "admin"):
-            messagebox.showwarning("Permission Denied", 
-                                 "Contact administrator for access")
-            return
+# Create subset datasets
+train_dataset = Subset(full_dataset, train_indices)
+val_dataset = Subset(full_dataset, val_indices)
+
+# Create data loaders
+train_loader = DataLoader(
+    train_dataset,
+    batch_size=config['batch_size'],
+    collate_fn=collate_fn,
+    shuffle=True,
+    num_workers=2,
+    pin_memory=True
+)
+
+val_loader = DataLoader(
+    val_dataset,
+    batch_size=config['batch_size'],
+    collate_fn=collate_fn,
+    shuffle=False,
+    num_workers=2,
+    pin_memory=True
+)
+
+# ---- Class Balancing ----
+# Calculate character frequencies for loss weighting
+char_counts = torch.zeros(len(config['chars']))
+for idx in train_indices:
+    plate_text = full_dataset.annotations[idx]['plate']
+    for c in plate_text:
+        char_counts[full_dataset.char_to_idx[c]] += 1
+
+# Add smoothing to prevent division by zero
+class_weights = 1.0 / (char_counts + 1e-6)  
+class_weights /= class_weights.sum()  # Normalize
+
+# ---- Model Setup with Weighted Loss ----
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = PlateRecognitionModel(num_chars=len(config['chars'])).to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=config['learning_rate'])
+criterion = torch.nn.CTCLoss(
+    blank=len(config['chars']),
+    weight=class_weights.to(device)
+)
+
+# ---- Enhanced Training Loop with Validation ----
+best_val_loss = float('inf')
+for epoch in range(config['num_epochs']):
+    # Training phase
+    model.train()
+    train_loss = 0.0
+    
+    for batch_idx, (images, labels, label_lengths) in enumerate(train_loader):
+        images = images.to(device)
+        labels = labels.to(device)
+        label_lengths = label_lengths.to(device)
         
-        if self.model is None:
-            messagebox.showerror("Error", "Model not loaded")
-            return
+        optimizer.zero_grad()
         
-        frame = self.video.get_frame()
-        if frame is None:
-            return
+        # Forward pass
+        outputs = model(images)
+        log_probs = torch.nn.functional.log_softmax(outputs, dim=2)
         
-        try:
-            # Preprocess frame
-            transformed = self.transform(image=frame)
-            img_tensor = transformed['image'].unsqueeze(0)
+        input_lengths = torch.full(
+            size=(images.size(0),),
+            fill_value=outputs.size(0),
+            dtype=torch.long
+        ).to(device)
+        
+        loss = criterion(
+            log_probs,
+            labels,
+            input_lengths,
+            label_lengths
+        )
+        
+        # Backward pass
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
+        optimizer.step()
+        
+        train_loss += loss.item()
+        
+        if batch_idx % 10 == 0:
+            print(f"Epoch {epoch+1} | Batch {batch_idx} | Loss: {loss.item():.4f}")
+
+    # Validation phase
+    model.eval()
+    val_loss = 0.0
+    with torch.no_grad():
+        for images, labels, label_lengths in val_loader:
+            images = images.to(device)
+            labels = labels.to(device)
+            label_lengths = label_lengths.to(device)
             
-            # Run inference
-            with torch.no_grad():
-                outputs = self.model(img_tensor)
-                _, preds = torch.max(outputs, 2)
-                plate_text = ''.join([self.config['chars'][i] for i in preds[0] if i < len(self.config['chars'])])
+            outputs = model(images)
+            log_probs = torch.nn.functional.log_softmax(outputs, dim=2)
             
-            # Display results
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            cv2.putText(frame, f"Plate: {plate_text}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            imgtk = ImageTk.PhotoImage(image=img)
-            self.video_label.imgtk = imgtk
-            self.video_label.configure(image=imgtk)
+            input_lengths = torch.full(
+                size=(images.size(0),),
+                fill_value=outputs.size(0),
+                dtype=torch.long
+            ).to(device)
             
-            # Log action
-            self.db.log_action(self.current_user['username'], 
-                             f"Detected plate: {plate_text}")
-            
-        except Exception as e:
-            messagebox.showerror("Detection Error", str(e))
+            loss = criterion(
+                log_probs,
+                labels,
+                input_lengths,
+                label_lengths
+            )
+            val_loss += loss.item()
 
-    def show_logs(self):
-        logs_window = tk.Toplevel(self)
-        logs_window.title("Activity Logs")
-        
-        # Create treeview
-        tree = ttk.Treeview(logs_window, columns=("Timestamp", "User", "Action"))
-        tree.heading("#0", text="ID")
-        tree.heading("Timestamp", text="Timestamp")
-        tree.heading("User", text="User")
-        tree.heading("Action", text="Action")
-        
-        # Fetch logs
-        c = self.db.conn.cursor()
-        c.execute("SELECT * FROM logs ORDER BY timestamp DESC LIMIT 100")
-        
-        for log in c.fetchall():
-            tree.insert("", tk.END, 
-                        text=str(log[0]), 
-                        values=(log[1], log[2], log[3]))
-        
-        tree.pack(fill=tk.BOTH, expand=True)
+    # Epoch statistics
+    avg_train_loss = train_loss / len(train_loader)
+    avg_val_loss = val_loss / len(val_loader)
+    print(f"Epoch {epoch+1} Complete")
+    print(f"Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
 
-    def stop_video(self):
-        self.video.stop_video()
-        self.db.log_action(self.current_user['username'], "Stopped camera")
+    # Save best model
+    if avg_val_loss < best_val_loss:
+        best_val_loss = avg_val_loss
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'config': config,
+            'chars': config['chars'],
+            'val_loss': avg_val_loss
+        }, "models/number_plate_model.pth")
+        print(f"New best model saved with val loss {avg_val_loss:.4f}")
 
-if __name__ == "__main__":
-    app = MainApplication()
-    app.mainloop()
+print("Training complete! Best model saved to models/number_plate_model.pth")
